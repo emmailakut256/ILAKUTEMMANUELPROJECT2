@@ -1,0 +1,130 @@
+#lang racket
+(require data-science
+         csv-reading
+         plot
+         srfi/19)
+
+;; Define a mapping of months to colors
+(define month-to-color
+  (hash "2024-01" "Crimson"
+        "2024-02" "Gold"
+        "2024-03" "Olive"
+        "2024-04" "Turquoise"
+        "2024-05" "Navy"
+        "2024-06" "Lavender"
+        "2024-07" "Fuchsia"
+        "2024-08" "Coral"
+        "2024-09" "yellow"
+        "2024-10" "orange"
+        "2024-11" "cyan"
+        "2024-12" "purple"))
+
+;; Load the dataset from the CSV file
+(define (load-tweets-from-csv file-path)
+  (with-input-from-file file-path
+    (λ ()
+      (let ([csv-data (csv->list (current-input-port))]) ; Provide input port
+        ;; Map each row to a list of tweet text, location, and created at
+        (map (λ (row)
+               (list (list-ref row 2) ; Tweet text
+                     (list-ref row 4) ; Location
+                     (list-ref row 3))) ; Created at
+             (cdr csv-data)))))) ; Skip header row
+
+;; Define the path to the CSV in the collects folder
+(define file-path
+  (path->string
+   (collection-file-path "ugandan_tweets_1000_records.csv" "subcollection")))
+
+;; Ensure the path is correct
+(displayln file-path)
+
+;; Load tweets
+(define ugandan-tweets (load-tweets-from-csv file-path))
+
+;; Output the loaded tweets for debugging
+;(displayln example-tweets)
+
+
+;; **Step 1: Data Parsing and Transformation**
+
+;; Convert a date string to a month key
+(define (extract-month-key date-str)
+  (date->string (string->date date-str "~Y-~m-~d") "~Y-~m"))
+
+;; Group tweets by their month
+(define (group-tweets-by-month tweets)
+  (let ([month-groups (make-hash)])
+    (for ([tweet tweets])
+      (let* ([month (extract-month-key (list-ref tweet 2))]
+             [group (hash-ref month-groups month '())])
+        (hash-set! month-groups month (cons tweet group))))
+    month-groups)) ; Return the hash at the end
+
+
+;; Create a unified text from grouped tweets
+(define (create-month-doc tweets)
+  (string-join (map (λ (tweet) (list-ref tweet 0)) tweets) " "))
+
+;; Tokenize and compute word frequencies
+(define (process-tweets-to-frequencies tweet-doc)
+  (document->tokens tweet-doc #:sort? #t))
+
+;; Perform sentiment analysis
+(define (analyze-tweet-sentiments tokens)
+  (list->sentiment tokens #:lexicon 'nrc))
+
+;; Aggregate sentiment results into a hash table
+(define (aggregate-sentiments-by-type sentiments)
+  (for/fold ([sentiment-agg (make-hash)])
+            ([sentiment sentiments])
+    (let* ([type (list-ref sentiment 1)]
+           [freq (if (number? (list-ref sentiment 2))
+                     (list-ref sentiment 2)
+                     (string->number (list-ref sentiment 2)))]
+           [current-value (hash-ref sentiment-agg type 0)])
+      (unless (equal? type "sentiment") ; Skip the "sentiment" key
+        (hash-set! sentiment-agg type (+ current-value (or freq 0))))
+      sentiment-agg)))
+
+
+
+
+
+;; **Step 2: Process Tweets Pipeline**
+
+(define (process-all-tweets tweets)
+  (let ([grouped (group-tweets-by-month tweets)])
+    (for/hash ([month (hash-keys grouped)])
+      (let* ([month-tweets (hash-ref grouped month)]
+             [doc (create-month-doc month-tweets)]
+             [frequencies (process-tweets-to-frequencies doc)]
+             [sentiments (analyze-tweet-sentiments frequencies)]
+             [aggregated (aggregate-sentiments-by-type sentiments)])
+        (values month aggregated))))) ; Pair month with aggregated sentiments
+
+
+(define monthly-sentiments (process-all-tweets ugandan-tweets))
+
+;; **Step 3: Visualization**
+
+(define (plot-monthly-sentiments sentiment-data)
+  (parameterize ([plot-width 900]
+                 [plot-height 600]
+                 [plot-x-label "Sentiment Type"]
+                 [plot-y-label "Frequency"])
+    (plot
+     (for/list ([month (sort (hash-keys sentiment-data) string<?)])
+       (let* ([month-data (hash-ref sentiment-data month)]
+              [color (hash-ref month-to-color month "Black")]
+              [bars (map (λ (pair) (list (car pair) (cdr pair))) (hash->list month-data))])
+         (discrete-histogram bars
+                             #:color color
+                             #:label month))))))
+
+;; Display processed sentiments for debugging
+(for ([month (hash-keys monthly-sentiments)])
+  (printf "Month: ~a\nSentiments: ~a\n\n" month (hash-ref monthly-sentiments month)))
+
+;; Generate the plot
+(plot-monthly-sentiments monthly-sentiments)
